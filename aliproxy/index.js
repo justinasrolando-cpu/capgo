@@ -3,6 +3,25 @@
 const { Buffer } = require('node:buffer')
 const https = require('node:https')
 
+
+// Sensitive query parameter keys whose values should be redacted from logs
+const SENSITIVE_PARAM_KEYS = /^(token|api[_-]?key|apikey|secret|session|password|passwd|auth(?:orization)?|access[_-]?token|refresh[_-]?token|key|credential|sig(?:nature)?)$/i
+
+function redactPath(rawPath) {
+  try {
+    // Use string-based replacement to avoid URLSearchParams percent-encoding [REDACTED]
+    return rawPath.replace(
+      /([?&])([^=&#]+)=([^&#]*)/g,
+      (match, sep, key, value) => SENSITIVE_PARAM_KEYS.test(decodeURIComponent(key))
+        ? `${sep}${key}=[REDACTED]`
+        : match,
+    )
+  }
+  catch {
+    return rawPath
+  }
+}
+
 const TARGET_HOST = 'updater.capgo.com.cn'
 
 exports.handler = function (event, _context, callback) {
@@ -62,7 +81,7 @@ exports.handler = function (event, _context, callback) {
     }
 
     console.log('[DEBUG] Proxying request:', {
-      url: `https://${TARGET_HOST}${path}`,
+      url: `https://${TARGET_HOST}${redactPath(path)}`,
       method,
       hasBody: !!bodyBuffer,
       bodySize: bodyBuffer ? bodyBuffer.length : 0,
@@ -104,11 +123,11 @@ exports.handler = function (event, _context, callback) {
     })
 
     req.on('error', (err) => {
-      console.error('[ERROR] Request failed:', err)
+      console.error('[ERROR] Request failed:', err instanceof Error ? err.message : String(err))
       callback(null, {
         statusCode: 502,
         headers: { 'content-type': 'text/plain' },
-        body: `upstream error: ${err.message}`,
+        body: 'upstream error',
       })
     })
 
@@ -118,11 +137,11 @@ exports.handler = function (event, _context, callback) {
     req.end()
   }
   catch (err) {
-    console.error('[ERROR] Handler exception:', err)
+    console.error('[ERROR] Handler exception:', err instanceof Error ? err.message : String(err))
     callback(null, {
       statusCode: 500,
       headers: { 'content-type': 'text/plain' },
-      body: `internal error: ${err.message}`,
+      body: 'internal error',
     })
   }
 }
