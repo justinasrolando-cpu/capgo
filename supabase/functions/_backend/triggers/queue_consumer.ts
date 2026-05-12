@@ -7,6 +7,7 @@ import { safeParseSchema } from '../utils/ark_validation.ts'
 import { sendDiscordAlert } from '../utils/discord.ts'
 import { BRES, middlewareAPISecret, parseBody, simpleError } from '../utils/hono.ts'
 import { cloudlog, cloudlogErr } from '../utils/logging.ts'
+import { redactUrl } from '../utils/log_redaction.ts'
 import { closeClient, getPgClient } from '../utils/pg.ts'
 import { backgroundTask, getEnv } from '../utils/utils.ts'
 
@@ -156,6 +157,23 @@ function sanitizeDiscordResponseBody(value: string): string {
     .replace(/((?:api[-_]?key|token|authorization|password|secret|access[-_]?token|refresh[-_]?token)["']?\s*[:=]\s*["']?)([^"',\s}]+)/gi, '$1[REDACTED]')
     .replace(/\b[\dA-F]{32,}\b/gi, '[REDACTED_TOKEN]')
     .replace(/\b[\w+/=-]{40,}\b/g, '[REDACTED_TOKEN]')
+}
+
+// Recursively sanitize request body values using the same rules as sanitizeDiscordResponseBody.
+// Prevents bearer tokens, emails, session keys, refresh tokens, and inline token-like metadata
+// from being written to the log stream via queue request body logging.
+function sanitizeRequestBody(value: unknown, depth = 0): unknown {
+  if (depth > 10) return '[TRUNCATED]'
+  if (typeof value === 'string') return sanitizeDiscordResponseBody(value)
+  if (Array.isArray(value)) return value.map(item => sanitizeRequestBody(item, depth + 1))
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = sanitizeRequestBody(v, depth + 1)
+    }
+    return out
+  }
+  return value
 }
 
 // Helper function to generate UUID v4
@@ -480,7 +498,7 @@ export async function http_post_helper(
   // 15 second timeout, as the queue consumer is running every 10 seconds and the visibility timeout is 60 seconds
 
   try {
-    cloudlog({ requestId: c.get('requestId'), message: `[${function_name}] Making HTTP POST request to "${url}" with body:`, body })
+    cloudlog({ requestId: c.get('requestId'), message: `[${function_name}] Making HTTP POST request`, url_host: new URL(redactUrl(url)).hostname, body: sanitizeRequestBody(body) })
     const response = await fetch(url, {
       method: 'POST',
       headers,
